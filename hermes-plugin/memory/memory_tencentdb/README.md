@@ -311,10 +311,11 @@ Tool-call arguments are defensively coerced: `limit` accepts ints, numeric
 strings, and floats, rejects bools, and is clamped to `[1, 20]` with a
 warning on garbage input.
 
-> These are the **only** tool names registered with the LLM. The old
-> `tdai_memory_search` / `tdai_conversation_search` names are not served by
-> this provider — if older transcripts reference them, `handle_tool_call`
-> will return an "Unknown tool" error.
+> These are the **canonical** tool names registered with the LLM. Legacy
+> OpenClaw-era aliases `tdai_memory_search` / `tdai_conversation_search` are
+> still accepted by `handle_tool_call` (compat for old transcripts and the
+> pre-fix gateway MEMORY_TOOLS_GUIDE). Prefer the `memory_tencentdb_*` names
+> in new code and docs.
 
 ## Plugin Metadata (`plugin.yaml`)
 
@@ -343,11 +344,13 @@ aliases:
   preference list (in-tree first, then `$HOME`). If you want to pin a
   specific path, set `MEMORY_TENCENTDB_GATEWAY_CMD` explicitly — it always
   wins over discovery.
-- **Search tools silently missing from the LLM**: `get_tool_schemas()`
-  returns `[]` until either the Gateway is reachable or one of
-  `MEMORY_TENCENTDB_GATEWAY_CMD` / `MEMORY_TENCENTDB_GATEWAY_PORT` is set
-  in the environment. Set the env var so the tools are advertised
-  optimistically at registration time.
+- **Search tools silently missing / "Unknown tool: memory_tencentdb_*"**:
+  `MemoryManager.add_provider()` indexes `get_tool_schemas()` **before**
+  `initialize()`. Older builds returned `[]` until Gateway env was set, so
+  `_tool_to_provider` stayed empty forever and every call hit
+  `Unknown tool`. Current plugin always advertises both schemas; Hermes also
+  re-indexes after `initialize_all()`. If you still see 0 tools registered,
+  restart the gateway / agent process so the fixed plugin is loaded.
 - **"circuit breaker tripped"** warnings: five consecutive Gateway errors
   were observed. Calls are paused for 60 s; check Gateway health and logs.
 - **Capture backlog warnings**: Gateway is slow or hung — `sync_turn` is
