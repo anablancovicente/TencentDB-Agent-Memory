@@ -141,18 +141,29 @@ async function performAutoRecallInner(params: {
   }
   const tSearchEnd = performance.now();
 
-  // Read persona (L3 layer) — per-user namespace first (profiles/<actorId>/persona.md),
-  // legacy global persona.md as fallback.
+  // Read persona (L3 layer) — per-user namespace only (profiles/<actorId>/persona.md).
+  // No legacy global fallback: unknown actors must NOT receive the owner dossier
+  // (identity-merge leak, 2026-08-29 governance finding).
+  // Candidate dirs: raw actorId, URL-encoded form, platform-prefix-stripped id
+  // (writers historically stored under the bare id, e.g. "599082521").
   const tPersonaStart = performance.now();
   let personaContent: string | undefined;
   try {
-    const userPersonaPath = path.join(pluginDataDir, "profiles", params.actorId, "persona.md");
-    const legacyPersonaPath = path.join(pluginDataDir, "persona.md");
+    // Prefix stripping only for trusted platform anchors — an arbitrary
+    // "whatever:599082521" must not inherit the owner dossier.
+    const KNOWN_PLATFORMS = ["telegram", "discord"];
+    const sep = params.actorId.indexOf(":");
+    const bare =
+      sep > 0 && KNOWN_PLATFORMS.includes(params.actorId.slice(0, sep))
+        ? params.actorId.slice(sep + 1)
+        : params.actorId;
+    const candidates = [...new Set([params.actorId, encodeURIComponent(params.actorId), bare, encodeURIComponent(bare)])];
     let raw: string | undefined;
-    try {
-      raw = await fs.readFile(userPersonaPath, "utf-8");
-    } catch {
-      raw = await fs.readFile(legacyPersonaPath, "utf-8");
+    for (const c of candidates) {
+      try {
+        raw = await fs.readFile(path.join(pluginDataDir, "profiles", c, "persona.md"), "utf-8");
+        break;
+      } catch { /* try next candidate */ }
     }
     if (raw !== undefined) {
       personaContent = stripSceneNavigation(raw).trim();
