@@ -46,7 +46,7 @@ export async function extractToGraph(
       systemPrompt: SYSTEM_PROMPT,
       prompt: `USER: ${userText.slice(0, 2000)}\nASSISTANT: ${assistantText.slice(0, 2000)}`,
       taskId: "graph-extract",
-      timeoutMs: 30_000,
+      timeoutMs: 120_000,
     });
   } catch {
     return result; // extraction is best-effort, never blocks capture
