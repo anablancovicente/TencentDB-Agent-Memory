@@ -33,6 +33,7 @@ export interface RecallRequest {
   query: string;
   session_key: string;
   user_id?: string;
+  top_k?: number;
 }
 
 export interface RecallResponse {
