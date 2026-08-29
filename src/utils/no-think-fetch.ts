@@ -26,10 +26,12 @@ export type DisableThinkingStrategy =
   | "openai"
   | "anthropic"
   | "kimi"
-  | "gemini";
+  | "gemini"
+  /** Model rejects any thinking field — strip it entirely (glm-5.3-flash via cliproxy). */
+  | "none";
 
 export const VALID_DISABLE_THINKING_STRATEGIES: readonly DisableThinkingStrategy[] = [
-  false, "vllm", "deepseek", "dashscope", "openai", "anthropic", "kimi", "gemini",
+  false, "vllm", "deepseek", "dashscope", "openai", "anthropic", "kimi", "gemini", "none",
 ] as const;
 
 /** Check if a value is a valid DisableThinkingStrategy. */
@@ -88,6 +90,12 @@ function applyGemini(body: Record<string, unknown>): void {
   body.thinking_config = { thinking_budget: 0 };
 }
 
+function applyNone(body: Record<string, unknown>): void {
+  delete body.thinking;
+  delete body.thinking_config;
+  delete body.enable_thinking;
+}
+
 const STRATEGY_TRANSFORMERS: Record<
   Exclude<DisableThinkingStrategy, false>,
   (body: Record<string, unknown>) => void
@@ -99,6 +107,7 @@ const STRATEGY_TRANSFORMERS: Record<
   anthropic: applyAnthropic,
   kimi: applyAnthropic,
   gemini: applyGemini,
+  none: applyNone,
 };
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
