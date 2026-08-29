@@ -511,6 +511,7 @@ export function createL2Runner(opts: {
       model: cfg.persona.model,
       maxScenes: cfg.persona.maxScenes,
       sceneBackupCount: cfg.persona.sceneBackupCount,
+      timeoutMs: cfg.persona.sceneTimeoutMs,
       logger,
       instanceId,
       llmRunner,
