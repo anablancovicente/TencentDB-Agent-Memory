@@ -55,6 +55,8 @@ export interface PersonaConfig {
   backupCount: number;
   /** Scene blocks backup count (default: 10) */
   sceneBackupCount: number;
+  /** L2 scene-extraction LLM timeout in ms (default 600s; glm-5.3-flash with tools is slow). */
+  sceneTimeoutMs: number;
   /** LLM model for persona generation, format: "provider/model" (falls back to OpenClaw default model when omitted) */
   model?: string;
 }
@@ -517,6 +519,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       backupCount: num(personaGroup, "backupCount") ?? 3,
       sceneBackupCount: num(personaGroup, "sceneBackupCount") ?? 10,
       model: optStr(personaGroup, "model"),
+      sceneTimeoutMs: num(personaGroup, "sceneTimeoutMs") ?? 600_000,
     },
     pipeline: {
       everyNConversations: num(pipelineGroup, "everyNConversations") ?? 5,
