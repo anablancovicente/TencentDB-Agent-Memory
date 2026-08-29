@@ -181,6 +181,8 @@ export interface CompletedTurn {
   sessionKey: string;
   /** Session ID within the session key (optional, for sub-session grouping). */
   sessionId?: string;
+  /** Platform user id (namespace key for per-user memory scoping). */
+  userId?: string;
   /** Epoch ms when this turn started. */
   startedAt?: number;
   /**
@@ -189,11 +191,6 @@ export interface CompletedTurn {
    * polluted by prependContext injection.
    */
   originalUserMessageCount?: number;
-  /**
-   * Platform user identity (gateway `user_id`). Scoped for per-user
-   * persona/scene namespaces. Undefined/"default_user" = legacy global store.
-   */
-  userId?: string;
 }
 
 // ============================
