@@ -46,6 +46,8 @@ export async function performAutoCapture(params: {
   messages: unknown[];
   sessionKey: string;
   sessionId?: string;
+  /** Platform user identity (gateway user_id); scoped for per-user persona/scene namespaces. */
+  userId?: string;
   cfg: MemoryTdaiConfig;
   pluginDataDir: string;
   logger?: Logger;
