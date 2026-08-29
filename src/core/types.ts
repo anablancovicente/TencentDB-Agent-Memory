@@ -189,6 +189,11 @@ export interface CompletedTurn {
    * polluted by prependContext injection.
    */
   originalUserMessageCount?: number;
+  /**
+   * Platform user identity (gateway `user_id`). Scoped for per-user
+   * persona/scene namespaces. Undefined/"default_user" = legacy global store.
+   */
+  userId?: string;
 }
 
 // ============================
