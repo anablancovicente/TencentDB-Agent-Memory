@@ -157,7 +157,9 @@ async function performAutoRecallInner(params: {
       sep > 0 && KNOWN_PLATFORMS.includes(params.actorId.slice(0, sep))
         ? params.actorId.slice(sep + 1)
         : params.actorId;
-    const candidates = [...new Set([params.actorId, encodeURIComponent(params.actorId), bare, encodeURIComponent(bare)])];
+    const candidates = [...new Set([params.actorId, encodeURIComponent(params.actorId), bare, encodeURIComponent(bare)])]
+      // Traversal guard: user_id=".." reached the global dossier via path.join.
+      .filter((c) => !c.includes("/") && !c.includes("\\") && !c.includes(".."));
     let raw: string | undefined;
     for (const c of candidates) {
       try {
@@ -176,13 +178,21 @@ async function performAutoRecallInner(params: {
   const tPersonaEnd = performance.now();
 
   // Load full scene navigation (L2 layer)
+  // Scene blocks are currently written globally (scene_blocks/ shared); their content
+  // belongs to the namespaces that own persona files. An actor without its own
+  // namespace must not receive another actor's scene navigation (governance 2026-08-30).
   const tSceneStart = performance.now();
   let sceneNavigation: string | undefined;
   try {
-    const sceneIndex = await readSceneIndex(pluginDataDir);
-    if (sceneIndex.length > 0) {
-      sceneNavigation = generateSceneNavigation(sceneIndex, pluginDataDir);
-      logger?.debug?.(`${TAG} Scene navigation generated: ${sceneIndex.length} scenes`);
+    const hasOwnNamespace = personaContent !== undefined;
+    if (hasOwnNamespace) {
+      const sceneIndex = await readSceneIndex(pluginDataDir);
+      if (sceneIndex.length > 0) {
+        sceneNavigation = generateSceneNavigation(sceneIndex, pluginDataDir);
+        logger?.debug?.(`${TAG} Scene navigation generated: ${sceneIndex.length} scenes`);
+      }
+    } else {
+      logger?.debug?.(`${TAG} Scene navigation withheld: actor has no own namespace`);
     }
   } catch {
     logger?.debug?.(`${TAG} No scene index found`);
