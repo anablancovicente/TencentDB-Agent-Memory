@@ -1193,6 +1193,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         session_key: String(doc.session_key ?? ""),
         session_id: String(doc.session_id ?? ""),
         metadata_json: String(doc.metadata_json ?? "{}"),
+        user_id: String(doc.user_id ?? "default"),
       });
     }
     return results;
@@ -1211,6 +1212,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         score: Number(doc.score ?? 0),
         recorded_at: epochMsToIso(Number(doc.recorded_at_ms ?? 0)),
         timestamp: Number(doc.timestamp ?? 0),
+        user_id: String(doc.user_id ?? "default"),
       });
     }
     return results;

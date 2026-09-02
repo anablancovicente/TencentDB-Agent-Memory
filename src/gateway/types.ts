@@ -69,6 +69,7 @@ export interface MemorySearchRequest {
   limit?: number;
   type?: string;
   scene?: string;
+  user_id?: string;
 }
 
 export interface MemorySearchResponse {
@@ -85,6 +86,7 @@ export interface ConversationSearchRequest {
   query: string;
   limit?: number;
   session_key?: string;
+  user_id?: string;
 }
 
 export interface ConversationSearchResponse {

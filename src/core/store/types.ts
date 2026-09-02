@@ -48,6 +48,7 @@ export interface L1SearchResult {
   session_key: string;
   session_id: string;
   metadata_json: string;
+  user_id: string;
 }
 
 /** Result from an L1 FTS keyword search. */
@@ -65,6 +66,7 @@ export interface L1FtsResult {
   session_key: string;
   session_id: string;
   metadata_json: string;
+  user_id: string;
 }
 
 /** Filter options for querying L1 records. */
@@ -106,6 +108,8 @@ export interface L0Record {
   recordedAt: string;
   /** Original message timestamp (epoch ms). */
   timestamp: number;
+  /** Platform user identity (per-user isolation). Empty → "default". */
+  userId?: string;
 }
 
 /** Result from an L0 vector similarity search. */
@@ -119,6 +123,7 @@ export interface L0SearchResult {
   score: number;
   recorded_at: string;
   timestamp: number;
+  user_id: string;
 }
 
 /** Result from an L0 FTS keyword search. */
@@ -132,6 +137,7 @@ export interface L0FtsResult {
   score: number;
   recorded_at: string;
   timestamp: number;
+  user_id: string;
 }
 
 /** Raw L0 row returned by query methods (used by L1 runner). */

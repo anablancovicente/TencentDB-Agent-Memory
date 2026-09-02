@@ -71,6 +71,8 @@ export interface MemoryRecord {
   sessionKey: string;
   /** Source session ID (single conversation instance identifier) */
   sessionId: string;
+  /** Platform user identity (per-user isolation). Optional — resolved from L0 when absent. */
+  userId?: string;
 }
 
 /**

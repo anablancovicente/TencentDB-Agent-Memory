@@ -54,6 +54,7 @@ export interface VectorSearchResult {
   session_id: string;
   /** Raw metadata JSON string (e.g., contains activity_start_time / activity_end_time for episodic) */
   metadata_json: string;
+  user_id: string;
 }
 
 /** L0 single-message vector search result. */
@@ -68,6 +69,7 @@ export interface L0VectorSearchResult {
   recorded_at: string;
   /** Original message timestamp (epoch ms) */
   timestamp: number;
+  user_id: string;
 }
 
 /** Raw row returned by L1 record queries (column names match SQLite schema). */
@@ -311,6 +313,7 @@ export interface FtsSearchResult {
   session_key: string;
   session_id: string;
   metadata_json: string;
+  user_id: string;
 }
 
 /** FTS5 search result for L0 records. */
@@ -324,6 +327,7 @@ export interface L0FtsSearchResult {
   score: number;
   recorded_at: string;
   timestamp: number;
+  user_id: string;
 }
 
 // ============================
@@ -357,6 +361,7 @@ export class VectorStore implements IMemoryStore {
 
   // Prepared statements — L1 (initialized in init())
   private stmtUpsertMeta!: StatementSync;
+  private stmtResolveUserBySession!: StatementSync;
   private stmtDeleteVec?: StatementSync;   // optional — only set when vecTablesReady
   private stmtInsertVec?: StatementSync;   // optional — only set when vecTablesReady
   private stmtDeleteMeta!: StatementSync;
@@ -605,8 +610,8 @@ export class VectorStore implements IMemoryStore {
       INSERT INTO l1_records (
         record_id, content, type, priority, scene_name, session_key, session_id,
         timestamp_str, timestamp_start, timestamp_end,
-        created_time, updated_time, metadata_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_time, updated_time, metadata_json, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         content=excluded.content,
         type=excluded.type,
@@ -616,7 +621,8 @@ export class VectorStore implements IMemoryStore {
         timestamp_start=excluded.timestamp_start,
         timestamp_end=excluded.timestamp_end,
         updated_time=excluded.updated_time,
-        metadata_json=excluded.metadata_json
+        metadata_json=excluded.metadata_json,
+        user_id=excluded.user_id
     `);
 
     if (this.dimensions > 0) {
@@ -627,8 +633,17 @@ export class VectorStore implements IMemoryStore {
 
     this.stmtGetMeta = this.db.prepare(`
       SELECT content, type, priority, scene_name, session_key, session_id,
-             timestamp_str, timestamp_start, timestamp_end, metadata_json
+             timestamp_str, timestamp_start, timestamp_end, metadata_json, user_id
       FROM l1_records WHERE record_id = ?
+    `);
+
+    // Resolve the owning user_id for an L1 record from its source L0 rows.
+    // ponytail: one extra prepared SELECT instead of threading userId through
+    // the whole L1 pipeline; L0 rows already carry user_id after the capture fix.
+    this.stmtResolveUserBySession = this.db.prepare(`
+      SELECT user_id FROM l0_conversations
+      WHERE session_key = ? AND user_id != 'default'
+      ORDER BY recorded_at DESC LIMIT 1
     `);
 
     if (this.dimensions > 0) {
@@ -684,12 +699,13 @@ export class VectorStore implements IMemoryStore {
     // L0 prepared statements
     this.stmtL0UpsertMeta = this.db.prepare(`
       INSERT INTO l0_conversations (
-        record_id, session_key, session_id, role, message_text, recorded_at, timestamp
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        record_id, session_key, session_id, role, message_text, recorded_at, timestamp, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         message_text=excluded.message_text,
         recorded_at=excluded.recorded_at,
-        timestamp=excluded.timestamp
+        timestamp=excluded.timestamp,
+        user_id=excluded.user_id
     `);
 
     if (this.dimensions > 0) {
@@ -699,7 +715,7 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0DeleteMeta = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?");
 
     this.stmtL0GetMeta = this.db.prepare(`
-      SELECT session_key, session_id, role, message_text, recorded_at, timestamp
+      SELECT session_key, session_id, role, message_text, recorded_at, timestamp, user_id
       FROM l0_conversations WHERE record_id = ?
     `);
 
@@ -794,11 +810,13 @@ export class VectorStore implements IMemoryStore {
       this.stmtL1FtsDelete = this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?");
 
       this.stmtL1FtsSearch = this.db.prepare(`
-        SELECT record_id, content_original AS content, type, priority, scene_name,
-               session_key, session_id, timestamp_str, timestamp_start, timestamp_end,
-               metadata_json,
+        SELECT f.record_id, f.content_original AS content, f.type, f.priority, f.scene_name,
+               f.session_key, f.session_id, f.timestamp_str, f.timestamp_start, f.timestamp_end,
+               f.metadata_json,
+               COALESCE(r.user_id, 'default') AS user_id,
                bm25(l1_fts) AS rank
-        FROM l1_fts
+        FROM l1_fts f
+        LEFT JOIN l1_records r ON r.record_id = f.record_id
         WHERE l1_fts MATCH ?
         ORDER BY rank ASC
         LIMIT ?
@@ -813,9 +831,11 @@ export class VectorStore implements IMemoryStore {
       this.stmtL0FtsDelete = this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?");
 
       this.stmtL0FtsSearch = this.db.prepare(`
-        SELECT record_id, message_text_original AS message_text, session_key, session_id, role, recorded_at, timestamp,
+        SELECT f.record_id, f.message_text_original AS message_text, f.session_key, f.session_id, f.role, f.recorded_at, f.timestamp,
+               COALESCE(c.user_id, 'default') AS user_id,
                bm25(l0_fts) AS rank
-        FROM l0_fts
+        FROM l0_fts f
+        LEFT JOIN l0_conversations c ON c.record_id = f.record_id
         WHERE l0_fts MATCH ?
         ORDER BY rank ASC
         LIMIT ?
@@ -1041,6 +1061,7 @@ export class VectorStore implements IMemoryStore {
           record.createdAt,
           record.updatedAt,
           JSON.stringify(record.metadata),
+          (record.userId) || this.resolveUserIdForSession(record.sessionKey),
         );
 
         if (!skipVec) {
@@ -1158,6 +1179,7 @@ export class VectorStore implements IMemoryStore {
               timestamp_start: string;
               timestamp_end: string;
               metadata_json: string;
+              user_id: string;
             }
           | undefined;
 
@@ -1185,6 +1207,7 @@ export class VectorStore implements IMemoryStore {
           session_key: meta.session_key,
           session_id: meta.session_id,
           metadata_json: meta.metadata_json,
+          user_id: meta.user_id || "default",
         });
       }
 
@@ -1452,6 +1475,7 @@ export class VectorStore implements IMemoryStore {
           record.messageText,
           record.recordedAt,
           record.timestamp,
+          record.userId || "default",
         );
 
         if (!skipVec) {
@@ -1604,6 +1628,7 @@ export class VectorStore implements IMemoryStore {
               message_text: string;
               recorded_at: string;
               timestamp: number;
+              user_id: string;
             }
           | undefined;
 
@@ -1627,6 +1652,7 @@ export class VectorStore implements IMemoryStore {
           score,
           recorded_at: meta.recorded_at,
           timestamp: meta.timestamp ?? 0,
+          user_id: meta.user_id || "default",
         });
       }
 
@@ -1940,6 +1966,19 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * Resolve the owning user_id for a session from its newest non-default L0 rows.
+   * Returns "default" when the session has no scoped rows (legacy/unattributed).
+   */
+  private resolveUserIdForSession(sessionKey: string): string {
+    try {
+      const row = this.stmtResolveUserBySession.get(sessionKey) as { user_id: string } | undefined;
+      return row?.user_id || "default";
+    } catch {
+      return "default";
+    }
+  }
+
+  /**
    * Query L0 messages for a given session key, grouped by session_id.
    * Each group's messages are in chronological order (recorded_at ASC).
    * Groups are sorted by earliest message timestamp.
@@ -2069,6 +2108,7 @@ export class VectorStore implements IMemoryStore {
         timestamp_start: string;
         timestamp_end: string;
         metadata_json: string;
+        user_id: string;
         rank: number;
       }>;
 
@@ -2085,6 +2125,7 @@ export class VectorStore implements IMemoryStore {
         session_key: r.session_key,
         session_id: r.session_id,
         metadata_json: r.metadata_json,
+        user_id: r.user_id || "default",
       }));
     } catch (err) {
       this.logger?.warn(
@@ -2114,6 +2155,7 @@ export class VectorStore implements IMemoryStore {
         role: string;
         recorded_at: string;
         timestamp: number;
+        user_id: string;
         rank: number;
       }>;
 
@@ -2126,6 +2168,7 @@ export class VectorStore implements IMemoryStore {
         score: bm25RankToScore(r.rank),
         recorded_at: r.recorded_at,
         timestamp: r.timestamp ?? 0,
+        user_id: r.user_id || "default",
       }));
     } catch (err) {
       this.logger?.warn(
