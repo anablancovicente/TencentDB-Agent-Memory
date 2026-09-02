@@ -917,6 +917,31 @@ export class VectorStore implements IMemoryStore {
 
     this.logger?.debug?.(`${TAG} Initialized (dimensions=${this.dimensions})`);
 
+    // Self-heal: if the vector index is empty but L1 text records exist, the vec
+    // tables were dropped (e.g. embedding config change) and never rebuilt. The
+    // saved embedding_meta already matches the current provider, so the config-drift
+    // check above won't re-fire — detect the empty-index state explicitly so semantic
+    // recall isn't silently stuck keyword-only after a restart.
+    if (!needsReindex && !this.degraded && this.vecTablesReady && this.dimensions > 0) {
+      try {
+        const l1Count = this.tableRowCount("l1_records");
+        const vecRow = this.db
+          .prepare("SELECT COUNT(*) AS cnt FROM l1_vec_rowids")
+          .get() as { cnt: number } | undefined;
+        const vecCount = vecRow?.cnt ?? 0;
+        if (l1Count > 0 && vecCount === 0) {
+          needsReindex = true;
+          reindexReason =
+            `vector index empty but ${l1Count} L1 record(s) present (dropped and never rebuilt)`;
+          this.logger?.info(`${TAG} ${reindexReason} — scheduling reindex`);
+        }
+      } catch (err) {
+        this.logger?.debug?.(
+          `${TAG} empty-index self-heal check skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     return { needsReindex, reason: reindexReason };
   }
 
