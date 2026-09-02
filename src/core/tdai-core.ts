@@ -472,6 +472,36 @@ export class TdaiCore {
       this.vectorStore = stores.vectorStore;
       this.embeddingService = stores.embeddingService;
       this.logger.debug?.(`${TAG} Stores initialized: backend=${this.cfg.storeBackend}, embedding=${this.cfg.embedding.provider}`);
+
+      // Consume the reindex flag. When the embedding config changes (or the
+      // vector index is found empty), init() drops the vec tables and returns
+      // needsReindex=true — historically this flag was ignored, leaving semantic
+      // recall silently stuck keyword-only. Re-embed in the background so gateway
+      // readiness isn't blocked; keyword recall keeps working while vectors land.
+      const store = this.vectorStore;
+      const embedSvc = this.embeddingService;
+      if (stores.needsReindex && store && embedSvc) {
+        this.logger.info(
+          `${TAG} Reindex required (${stores.reindexReason ?? "embedding config changed"}) — starting background re-embed`,
+        );
+        void store
+          .reindexAll(
+            (text) => embedSvc.embed(text),
+            (done, total, layer) => {
+              if (done % 200 === 0 || done === total) {
+                this.logger.info(`${TAG} [reindex] ${layer} ${done}/${total}`);
+              }
+            },
+          )
+          .then((res) => {
+            this.logger.info(`${TAG} [reindex] complete: L1=${res.l1Count}, L0=${res.l0Count}`);
+          })
+          .catch((err: unknown) => {
+            this.logger.warn(
+              `${TAG} [reindex] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+      }
     } catch (err) {
       this.logger.warn(
         `${TAG} Store init failed; recall/dedup degraded: ${err instanceof Error ? err.message : String(err)}`,
