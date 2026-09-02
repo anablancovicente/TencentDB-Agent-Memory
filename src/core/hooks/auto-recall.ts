@@ -19,6 +19,7 @@ import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-na
 import type { MemoryRecord } from "../record/l1-reader.js";
 import type { IMemoryStore, L1SearchResult, L1FtsResult } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
+import { memoryVisibleTo } from "../tools/user-scope.js";
 import type { EmbeddingService, EmbeddingCallOptions } from "../store/embedding.js";
 import { sanitizeText } from "../../utils/sanitize.js";
 import type { Logger } from "../types.js";
@@ -122,7 +123,7 @@ async function performAutoRecallInner(params: {
     logger?.debug?.(`${TAG} User text empty/undefined, skipping memory search (persona/scene still injected)`);
   } else {
     effectiveStrategy = cfg.recall.strategy ?? "hybrid";
-    const searchResult = await searchMemories(userText, pluginDataDir, cfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService);
+    const searchResult = await searchMemories(userText, pluginDataDir, cfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, params.actorId !== "default_user" ? params.actorId : undefined);
     memoryLines = searchResult.lines;
     searchTiming = searchResult.timing;
     memoryLines = applyRecallBudget(memoryLines, cfg.recall, logger);
@@ -343,7 +344,9 @@ async function searchMemories(
   strategy: "keyword" | "embedding" | "hybrid",
   vectorStore?: IMemoryStore,
   embeddingService?: EmbeddingService,
+  userId?: string,
 ): Promise<SearchResult> {
+  const ownerUserId = cfg.recall.ownerUserId;
   const emptyResult: SearchResult = { lines: [], timing: { ftsMs: 0, embeddingMs: 0, ftsHits: 0, embeddingHits: 0 } };
   // Strip gateway-injected inbound metadata (Sender, timestamps, media markers,
   // base64 image data, etc.) so FTS / embedding queries are based on pure user intent.
@@ -391,13 +394,13 @@ async function searchMemories(
   try {
     if (effectiveStrategy === "keyword") {
       const tFts = performance.now();
-      const lines = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore);
+      const lines = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore, userId, ownerUserId);
       return { lines, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: lines.length, embeddingHits: 0 } };
     }
 
     if (effectiveStrategy === "embedding") {
       const tEmb = performance.now();
-      const lines = await searchByEmbedding(cleanText, maxResults, threshold, vectorStore!, embeddingService!, logger, embeddingCallOpts);
+      const lines = await searchByEmbedding(cleanText, maxResults, threshold, vectorStore!, embeddingService!, logger, embeddingCallOpts, userId, ownerUserId);
       return { lines, timing: { ftsMs: 0, embeddingMs: performance.now() - tEmb, ftsHits: 0, embeddingHits: lines.length } };
     }
 
@@ -409,12 +412,14 @@ async function searchMemories(
       const results = await vectorStore.searchL1Hybrid({ query: cleanText, topK: maxResults });
       const nativeMs = performance.now() - tNative;
       logger?.debug?.(`${TAG} [hybrid-native] Single-call hybrid: ${results.length} results in ${nativeMs.toFixed(0)}ms`);
-      const lines = results.map((r) => formatMemoryLine(vectorResultToFormatable(r)));
+      const lines = results
+        .filter((r) => memoryVisibleTo((r as { user_id?: string }).user_id, userId, ownerUserId))
+        .map((r) => formatMemoryLine(vectorResultToFormatable(r)));
       return { lines, timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length } };
     }
 
     // Fallback: run keyword + embedding in parallel, merge with client-side RRF (SQLite path)
-    return await searchHybrid(cleanText, pluginDataDir, maxResults, threshold, vectorStore!, embeddingService!, logger, embeddingCallOpts);
+    return await searchHybrid(cleanText, pluginDataDir, maxResults, threshold, vectorStore!, embeddingService!, logger, embeddingCallOpts, userId, ownerUserId);
   } catch (err) {
     logger?.warn?.(`${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`);
     return emptyResult;
@@ -432,6 +437,8 @@ async function searchByKeyword(
   threshold: number,
   logger?: Logger,
   vectorStore?: IMemoryStore,
+  userId?: string,
+  ownerUserId?: string,
 ): Promise<string[]> {
   // Prefer FTS5 if available
   if (vectorStore?.isFtsAvailable()) {
@@ -445,6 +452,7 @@ async function searchByKeyword(
           ftsResults.map((r) => `id=${r.record_id} score=${r.score.toFixed(6)}`).join(", "),
         );
         const filtered = ftsResults
+          .filter((r) => memoryVisibleTo(r.user_id, userId, ownerUserId))
           .filter((r) => r.score >= threshold)
           .slice(0, maxResults);
 
@@ -485,6 +493,8 @@ async function searchByEmbedding(
   embeddingService: EmbeddingService,
   logger?: Logger,
   embeddingCallOpts?: EmbeddingCallOptions,
+  userId?: string,
+  ownerUserId?: string,
 ): Promise<string[]> {
   logger?.debug?.(
     `${TAG} [embedding-search] START query="${userText.slice(0, 80)}...", maxResults=${maxResults}, threshold=${threshold}`,
@@ -496,7 +506,8 @@ async function searchByEmbedding(
     `searching top-${maxResults * 2}...`,
   );
   // Retrieve more candidates for subsequent filtering
-  const vecResults: L1SearchResult[] = await vectorStore.searchL1Vector(queryEmbedding, maxResults * 2);
+  const vecResultsRaw: L1SearchResult[] = await vectorStore.searchL1Vector(queryEmbedding, maxResults * 2);
+  const vecResults = vecResultsRaw.filter((r) => memoryVisibleTo(r.user_id, userId, ownerUserId));
 
   if (vecResults.length === 0) {
     logger?.debug?.(`${TAG} [embedding-search] Returned 0 results`);
@@ -547,6 +558,8 @@ async function searchHybrid(
   embeddingService: EmbeddingService,
   logger?: Logger,
   embeddingCallOpts?: EmbeddingCallOptions,
+  userId?: string,
+  ownerUserId?: string,
 ): Promise<SearchResult> {
   // Run keyword and embedding searches in parallel
   const candidateK = maxResults * 3; // retrieve more for merging
@@ -564,7 +577,9 @@ async function searchHybrid(
             if (ftsResults.length > 0) {
               logger?.debug?.(`${TAG} [hybrid-keyword-fts] FTS5 found ${ftsResults.length} candidates`);
               // Convert FtsSearchResult to ScoredRecord for RRF merge
-              const records = ftsResults.map((r): ScoredRecord => ({
+              const records = ftsResults
+                .filter((r) => memoryVisibleTo(r.user_id, userId, ownerUserId))
+                .map((r): ScoredRecord => ({
                 record: {
                   id: r.record_id,
                   content: r.content,
@@ -604,7 +619,7 @@ async function searchHybrid(
         );
         const results = await vectorStore.searchL1Vector(queryEmbedding, candidateK, userText);
         logger?.debug?.(`${TAG} [hybrid-embedding] Got ${results.length} candidates`);
-        return { results, ms: performance.now() - tStart };
+        return { results: results.filter((r) => memoryVisibleTo(r.user_id, userId, ownerUserId)), ms: performance.now() - tStart };
       } catch (err) {
         logger?.warn?.(`${TAG} Hybrid: embedding part failed: ${err instanceof Error ? err.message : String(err)}`);
         return { results: [] as L1SearchResult[], ms: performance.now() - tStart };
