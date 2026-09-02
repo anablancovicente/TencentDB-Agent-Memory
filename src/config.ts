@@ -93,6 +93,8 @@ export interface RecallConfig {
   scoreThreshold: number;
   /** Search strategy (default: "hybrid") */
   strategy: "embedding" | "keyword" | "hybrid";
+  /** Owner user id — additionally sees legacy user_id='default' memories (pre-isolation pool). */
+  ownerUserId?: string;
   /** Overall recall timeout in milliseconds (default: 5000). When exceeded, recall is skipped with a warning. */
   timeoutMs: number;
 }
@@ -537,6 +539,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       maxTotalRecallChars: num(recallGroup, "maxTotalRecallChars") ?? 0,
       scoreThreshold: num(recallGroup, "scoreThreshold") ?? 0.3,
       strategy: validateStrategy(str(recallGroup, "strategy")) ?? "hybrid",
+      ownerUserId: str(recallGroup, "ownerUserId") || undefined,
       timeoutMs: num(recallGroup, "timeoutMs") ?? 5000,
     },
     embedding: {
