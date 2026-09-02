@@ -233,6 +233,8 @@ export interface MemorySearchParams {
   limit?: number;
   type?: string;
   scene?: string;
+  /** Caller's platform user id — results are filtered to this scope. */
+  userId?: string;
 }
 
 /** Search parameters for L0 conversation search. */
@@ -240,4 +242,6 @@ export interface ConversationSearchParams {
   query: string;
   limit?: number;
   sessionKey?: string;
+  /** Caller's platform user id — results are filtered to this scope. */
+  userId?: string;
 }
