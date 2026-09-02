@@ -12,6 +12,7 @@
 
 import type { IMemoryStore, L0SearchResult } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
+import { memoryVisibleTo } from "./user-scope.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 
@@ -84,6 +85,8 @@ export async function executeConversationSearch(params: {
   query: string;
   limit: number;
   sessionKey?: string;
+  userId?: string;
+  ownerUserId?: string;
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   logger?: Logger;
@@ -92,6 +95,8 @@ export async function executeConversationSearch(params: {
     query,
     limit,
     sessionKey: sessionFilter,
+    userId,
+    ownerUserId,
     vectorStore,
     embeddingService,
     logger,
@@ -148,7 +153,9 @@ export async function executeConversationSearch(params: {
         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 query: "${ftsQuery}"`);
         const ftsResults = await vectorStore.searchL0Fts(ftsQuery, candidateK);
         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 returned ${ftsResults.length} candidates`);
-        return ftsResults.map((r) => ({
+        return ftsResults
+          .filter((r) => memoryVisibleTo(r.user_id, userId, ownerUserId))
+          .map((r) => ({
           id: r.record_id,
           session_key: r.session_key,
           role: r.role,
@@ -175,7 +182,9 @@ export async function executeConversationSearch(params: {
         );
         const vecResults: L0SearchResult[] = await vectorStore.searchL0Vector(queryEmbedding, candidateK, query);
         logger?.debug?.(`${TAG} [hybrid-vec] Vector search returned ${vecResults.length} candidates`);
-        return vecResults.map((r) => ({
+        return vecResults
+          .filter((r) => memoryVisibleTo(r.user_id, userId, ownerUserId))
+          .map((r) => ({
           id: r.record_id,
           session_key: r.session_key,
           role: r.role,

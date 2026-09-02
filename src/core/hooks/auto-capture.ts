@@ -86,7 +86,7 @@ export async function performAutoCapture(params: {
   bgTaskRegistry?: Set<Promise<void>>;
 }): Promise<AutoCaptureResult> {
   const {
-    messages, sessionKey, sessionId, cfg, pluginDataDir, logger, scheduler,
+    messages, sessionKey, sessionId, userId, cfg, pluginDataDir, logger, scheduler,
     originalUserText, originalUserMessageCount, pluginStartTimestamp,
     vectorStore, embeddingService, bgTaskRegistry,
   } = params;
@@ -187,6 +187,7 @@ export async function performAutoCapture(params: {
           messageText: msg.content,
           recordedAt: now,
           timestamp: msg.timestamp,
+          userId: userId || "default",
         };
 
         let embedding: Float32Array | undefined;
