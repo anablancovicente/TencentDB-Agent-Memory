@@ -440,6 +440,7 @@ export class TdaiGateway {
       limit: body.limit,
       type: body.type,
       scene: body.scene,
+      userId: body.user_id,
     });
 
     const response: MemorySearchResponse = {
@@ -462,6 +463,7 @@ export class TdaiGateway {
       query: body.query,
       limit: body.limit,
       sessionKey: body.session_key,
+      userId: body.user_id,
     });
 
     const response: ConversationSearchResponse = {
