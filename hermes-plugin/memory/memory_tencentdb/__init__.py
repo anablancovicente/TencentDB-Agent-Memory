@@ -86,6 +86,16 @@ _WATCHDOG_SHUTDOWN_TIMEOUT_SECS = 2.0
 _DEFAULT_GATEWAY_HOST = "127.0.0.1"
 _DEFAULT_GATEWAY_PORT = 8420
 
+# ponytail: blunt tail-truncation backstop on the recalled-context string at the
+# immortal-role boundary. The surgical fix lives in the gateway
+# (scene-navigation.ts caps <scene-navigation> at source); this is
+# defence-in-depth so NO future runaway recall layer can blow the protected tail
+# floor again (Hermes cannot compress role=user content — see
+# hermes-profile-mechanics §13). Default sits ABOVE the healthy post-fix payload
+# (~7KB: persona ~4KB + capped scene-nav ~2.2KB + graph ~0.8KB) so it never trims
+# good content and fires only on a genuine runaway. Env-tunable; 0 disables.
+_DEFAULT_RECALL_MAX_CHARS = 12000
+
 # ---------------------------------------------------------------------------
 # Recalled-content fencing (prompt-injection defence)
 # ---------------------------------------------------------------------------
@@ -182,6 +192,30 @@ def _resolve_gateway_host(default: str = _DEFAULT_GATEWAY_HOST) -> str:
         return default
     host = raw.strip()
     return host or default
+
+
+def _resolve_recall_max_chars(default: int = _DEFAULT_RECALL_MAX_CHARS) -> int:
+    """Resolve MEMORY_TENCENTDB_RECALL_MAX_CHARS with validation.
+
+    Mirrors ``_resolve_gateway_port``: accepts surrounding whitespace, falls
+    back to ``default`` (logging a warning) when the value is unset, empty, or
+    not a valid integer. A resolved value of ``0`` means "disabled" (no cap);
+    negative values are treated as disabled too. Kept exception-safe so
+    ``prefetch`` never raises on a malformed env var.
+    """
+    raw = os.environ.get("MEMORY_TENCENTDB_RECALL_MAX_CHARS")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        n = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            "Invalid MEMORY_TENCENTDB_RECALL_MAX_CHARS=%r (not an integer); "
+            "falling back to default %d.",
+            raw, default,
+        )
+        return default
+    return n if n > 0 else 0
 
 
 def _resolve_gateway_api_key() -> Optional[str]:
@@ -917,6 +951,15 @@ class MemoryTencentdbProvider(MemoryProvider):
             context = result.get("context", "")
             self._record_success()
             if context:
+                # ponytail: blunt tail-truncation backstop BEFORE fencing, so the
+                # <recalled-memory> envelope is added around the already-bounded
+                # payload and stays balanced. The real fix is at the source
+                # (gateway scene-navigation.ts); this only fires if some recall
+                # layer runs away again — role=user content is immortal and no
+                # compressor pass can shrink it (hermes-profile-mechanics §13).
+                cap = _resolve_recall_max_chars()
+                if cap and len(context) > cap:
+                    context = context[:cap]
                 # Fence the payload: recalled content is untrusted historical
                 # data. Wrapping + token neutralisation prevents it from
                 # impersonating instructions or breaking out of the block.
