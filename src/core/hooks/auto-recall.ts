@@ -145,22 +145,16 @@ async function performAutoRecallInner(params: {
   // Read persona (L3 layer) — per-user namespace only (profiles/<actorId>/persona.md).
   // No legacy global fallback: unknown actors must NOT receive the owner dossier
   // (identity-merge leak, 2026-08-29 governance finding).
-  // Candidate dirs: raw actorId, URL-encoded form, platform-prefix-stripped id
-  // (writers historically stored under the bare id, e.g. "599082521").
+  // Candidate dirs: the actor id and its URL-encoded form. No platform-prefix
+  // stripping — a bare numeric directory is attributable to no platform, so
+  // "telegram:111" and "discord:111" must not share one dossier.
   const tPersonaStart = performance.now();
   let personaContent: string | undefined;
   try {
-    // Prefix stripping only for trusted platform anchors — an arbitrary
-    // "whatever:599082521" must not inherit the owner dossier.
-    const KNOWN_PLATFORMS = ["telegram", "discord"];
-    const sep = params.actorId.indexOf(":");
-    const bare =
-      sep > 0 && KNOWN_PLATFORMS.includes(params.actorId.slice(0, sep))
-        ? params.actorId.slice(sep + 1)
-        : params.actorId;
-    const candidates = [...new Set([params.actorId, encodeURIComponent(params.actorId), bare, encodeURIComponent(bare)])]
-      // Traversal guard: user_id=".." reached the global dossier via path.join.
-      .filter((c) => !c.includes("/") && !c.includes("\\") && !c.includes(".."));
+    const candidates = [...new Set([params.actorId, encodeURIComponent(params.actorId)])]
+      // Traversal guard: user_id=".." reached the global dossier via path.join,
+      // and an empty user_id collapses the segment away (profiles/persona.md).
+      .filter((c) => c.length > 0 && !c.includes("/") && !c.includes("\\") && !c.includes(".."));
     let raw: string | undefined;
     for (const c of candidates) {
       try {
@@ -179,21 +173,23 @@ async function performAutoRecallInner(params: {
   const tPersonaEnd = performance.now();
 
   // Load full scene navigation (L2 layer)
-  // Scene blocks are currently written globally (scene_blocks/ shared); their content
-  // belongs to the namespaces that own persona files. An actor without its own
-  // namespace must not receive another actor's scene navigation (governance 2026-08-30).
+  // Scene blocks are written globally (one scene_blocks/ dir, one flat index with
+  // no user field), so their content belongs to the configured owner alone.
+  // Serving them is an owner right — not a property of whichever directory happens
+  // to exist under profiles/ (governance 2026-08-30). No owner configured ⇒ fail closed.
   const tSceneStart = performance.now();
   let sceneNavigation: string | undefined;
   try {
-    const hasOwnNamespace = personaContent !== undefined;
-    if (hasOwnNamespace) {
+    const ownerUserId = cfg.recall.ownerUserId;
+    const isOwner = !!ownerUserId && params.actorId === ownerUserId;
+    if (isOwner) {
       const sceneIndex = await readSceneIndex(pluginDataDir);
       if (sceneIndex.length > 0) {
         sceneNavigation = generateSceneNavigation(sceneIndex, pluginDataDir);
         logger?.debug?.(`${TAG} Scene navigation generated: ${sceneIndex.length} scenes`);
       }
     } else {
-      logger?.debug?.(`${TAG} Scene navigation withheld: actor has no own namespace`);
+      logger?.debug?.(`${TAG} Scene navigation withheld: actor is not the configured owner`);
     }
   } catch {
     logger?.debug?.(`${TAG} No scene index found`);

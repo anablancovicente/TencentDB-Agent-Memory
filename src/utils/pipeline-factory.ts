@@ -286,7 +286,7 @@ export function createL1Runner(opts: {
     );
 
     try {
-      let groups: Array<{ sessionId: string; messages: ConversationMessage[] }>;
+      let groups: Array<{ sessionId: string; userId: string; messages: ConversationMessage[] }>;
       let maxRecordedAtMs = 0;
 
       if (vectorStore && !vectorStore.isDegraded()) {
@@ -296,6 +296,7 @@ export function createL1Runner(opts: {
         const dbGroups = await vectorStore.queryL0GroupedBySessionId(sessionKey, l1Cursor);
         groups = dbGroups.map((g) => ({
           sessionId: g.sessionId,
+          userId: g.userId,
           messages: g.messages.map((m) => ({
             id: m.id,
             role: m.role as "user" | "assistant",
@@ -321,6 +322,7 @@ export function createL1Runner(opts: {
         );
         groups = jsonlGroups.map((g) => ({
           sessionId: g.sessionId,
+          userId: g.userId,
           messages: g.messages,
         }));
         // Compute max recordedAtMs from JSONL groups
@@ -354,6 +356,7 @@ export function createL1Runner(opts: {
           messages: group.messages,
           sessionKey,
           sessionId: group.sessionId,
+          userId: group.userId,
           baseDir: pluginDataDir,
           config,
           options: {

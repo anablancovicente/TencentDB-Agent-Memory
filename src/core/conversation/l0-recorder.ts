@@ -51,6 +51,8 @@ export interface L0MessageRecord {
   role: "user" | "assistant";
   content: string;
   timestamp: number; // epoch ms
+  /** Author identity. Absent on lines written before per-user isolation. */
+  userId?: string;
 }
 
 /**
@@ -62,6 +64,8 @@ export interface L0ConversationRecord {
   sessionId: string;
   recordedAt: string; // ISO timestamp
   messageCount: number;
+  /** Author identity of these messages ("default" when the line predates isolation). */
+  userId: string;
   messages: ConversationMessage[];
 }
 
@@ -78,6 +82,7 @@ const TAG = "[memory-tdai][l0]";
  * Uses `afterTimestamp` as the primary filter to skip already-captured history.
  *
  * @param sessionKey - The session key for this conversation
+ * @param userId - Author identity stamped on every recorded line (per-user isolation)
  * @param rawMessages - Raw messages from the agent_end hook context (full session history)
  * @param baseDir - Base data directory (~/.openclaw/memory-tdai/)
  * @param logger - Optional logger
@@ -89,6 +94,7 @@ const TAG = "[memory-tdai][l0]";
 export async function recordConversation(params: {
   sessionKey: string;
   sessionId?: string;
+  userId?: string;
   rawMessages: unknown[];
   baseDir: string;
   logger?: Logger;
@@ -104,7 +110,7 @@ export async function recordConversation(params: {
    */
   originalUserMessageCount?: number;
 }): Promise<ConversationMessage[]> {
-  const { sessionKey, sessionId, rawMessages, baseDir, logger, originalUserText, afterTimestamp, originalUserMessageCount } = params;
+  const { sessionKey, sessionId, userId, rawMessages, baseDir, logger, originalUserText, afterTimestamp, originalUserMessageCount } = params;
 
   // Step 1: Position slice + extract user/assistant messages.
   //
@@ -274,6 +280,7 @@ export async function recordConversation(params: {
       role: msg.role,
       content: msg.content,
       timestamp: msg.timestamp,
+      userId: userId || "default",
     };
     lines.push(JSON.stringify(record));
   }
@@ -368,6 +375,7 @@ export async function readConversationRecords(
             sessionId: (parsed.sessionId as string) || "",
             recordedAt: (parsed.recordedAt as string) || new Date().toISOString(),
             messageCount: 1,
+            userId: (parsed.userId as string) || "default",
             messages: [msg],
           });
         } else {
@@ -431,15 +439,17 @@ export async function readConversationMessages(
 }
 
 /**
- * A group of conversation messages sharing the same sessionId.
+ * A group of conversation messages sharing the same sessionId and author.
  */
 export interface SessionIdMessageGroup {
   sessionId: string;
+  /** Author identity shared by every message in this group. */
+  userId: string;
   messages: Array<ConversationMessage & { recordedAtMs: number }>;
 }
 
 /**
- * Read L0 messages for a session, grouped by sessionId.
+ * Read L0 messages for a session, grouped by sessionId + author identity.
  *
  * Within the same sessionKey, different sessionIds represent different conversation
  * instances (e.g. after /reset). L1 extraction should process each group independently
@@ -464,14 +474,14 @@ export async function readConversationMessagesGroupedBySessionId(
   const records = await readConversationRecords(sessionKey, baseDir, logger);
 
   // Collect all messages with their sessionId, filtering by recorded_at cursor
-  const allMessages: Array<{ sessionId: string; msg: ConversationMessage & { recordedAtMs: number } }> = [];
+  const allMessages: Array<{ sessionId: string; userId: string; msg: ConversationMessage & { recordedAtMs: number } }> = [];
 
   for (const record of records) {
     const sid = record.sessionId || "";
     const recMs = Date.parse(record.recordedAt) || 0;
     if (afterRecordedAtMs && recMs <= afterRecordedAtMs) continue;
     for (const msg of record.messages) {
-      allMessages.push({ sessionId: sid, msg: { ...msg, recordedAtMs: recMs } });
+      allMessages.push({ sessionId: sid, userId: record.userId || "default", msg: { ...msg, recordedAtMs: recMs } });
     }
   }
 
@@ -488,24 +498,21 @@ export async function readConversationMessagesGroupedBySessionId(
     selected = allMessages.slice(-limit);
   }
 
-  // Re-group by sessionId
-  const groupMap = new Map<string, Array<ConversationMessage & { recordedAtMs: number }>>();
-  for (const { sessionId, msg } of selected) {
-    let group = groupMap.get(sessionId);
+  // Re-group by sessionId + userId: one session can carry messages from several
+  // authors (group chat), and each L1 memory must be stamped with the identity of
+  // the group it was extracted from.
+  const groupMap = new Map<string, SessionIdMessageGroup>();
+  for (const { sessionId, userId, msg } of selected) {
+    const key = `${sessionId}\u0000${userId}`;
+    let group = groupMap.get(key);
     if (!group) {
-      group = [];
-      groupMap.set(sessionId, group);
+      group = { sessionId, userId, messages: [] };
+      groupMap.set(key, group);
     }
-    group.push(msg);
+    group.messages.push(msg);
   }
 
-  // Convert to array, sorted by earliest message timestamp in each group
-  const groups: SessionIdMessageGroup[] = [];
-  for (const [sessionId, messages] of groupMap) {
-    if (messages.length > 0) {
-      groups.push({ sessionId, messages });
-    }
-  }
+  const groups: SessionIdMessageGroup[] = [...groupMap.values()].filter((g) => g.messages.length > 0);
   groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
 
   return groups;

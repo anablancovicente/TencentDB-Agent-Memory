@@ -65,12 +65,13 @@ const L1_OUTPUT_FIELDS = [
   "id", "text", "type", "priority", "scene_name",
   "session_key", "session_id", "timestamp_str", "timestamp_start",
   "timestamp_end", "metadata_json", "created_time_ms", "updated_time_ms",
+  "user_id",
 ];
 
 /** All L0 output fields returned by query/search. */
 const L0_OUTPUT_FIELDS = [
   "id", "message_text", "agent_id", "session_key", "session_id", "role",
-  "recorded_at_ms", "timestamp",
+  "recorded_at_ms", "timestamp", "user_id",
 ];
 
 const PROFILE_OUTPUT_FIELDS = [
@@ -265,6 +266,9 @@ export class TcvdbMemoryStore implements IMemoryStore {
           { fieldName: "timestamp_end",   fieldType: "string", indexType: "filter" },
           { fieldName: "created_time_ms", fieldType: "uint64", indexType: "filter" },
           { fieldName: "updated_time_ms", fieldType: "uint64", indexType: "filter" },
+          // Per-user isolation: collections created before this field existed
+          // must be recreated (VectorDB has no in-place scalar-field add).
+          { fieldName: "user_id",         fieldType: "string", indexType: "filter" },
         ],
       );
 
@@ -289,6 +293,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
           { fieldName: "role",           fieldType: "string", indexType: "filter" },
           { fieldName: "recorded_at_ms", fieldType: "uint64", indexType: "filter" },
           { fieldName: "timestamp",      fieldType: "int64",  indexType: "filter" },
+          { fieldName: "user_id",        fieldType: "string", indexType: "filter" },
         ],
       );
 
@@ -425,6 +430,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
       created_time_ms: isoToEpochMs(record.createdAt),
       updated_time_ms: isoToEpochMs(record.updatedAt),
       metadata_json: JSON.stringify(record.metadata),
+      user_id: record.userId || "default",
     };
 
     // BM25 sparse vector (if sidecar available)
@@ -470,6 +476,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
           created_time_ms: isoToEpochMs(record.createdAt),
           updated_time_ms: isoToEpochMs(record.updatedAt),
           metadata_json: JSON.stringify(record.metadata),
+          user_id: record.userId || "default",
         };
 
         if (this.bm25Encoder) {
@@ -732,7 +739,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
 
   // ── L0 Write Operations ──────────────────────────────────
 
-  async upsertL0(record: { id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number }, _embedding?: Float32Array): Promise<boolean> {
+  async upsertL0(record: { id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number; userId?: string }, _embedding?: Float32Array): Promise<boolean> {
     try {
       await this._upsertL0Async(record);
       return true;
@@ -742,7 +749,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
     }
   }
 
-  private async _upsertL0Async(record: { id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number }): Promise<void> {
+  private async _upsertL0Async(record: { id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number; userId?: string }): Promise<void> {
     await this._ensureInit();
     if (this.degraded) return;
 
@@ -755,6 +762,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
       role: record.role,
       recorded_at_ms: isoToEpochMs(record.recordedAt),
       timestamp: record.timestamp,
+      user_id: record.userId || "default",
     };
 
     if (this.bm25Encoder) {
@@ -771,7 +779,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
    * Batch upsert multiple L0 records in a single API call.
    * Used by migration scripts to reduce request count.
    */
-  async upsertL0Batch(records: Array<{ id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number }>): Promise<number> {
+  async upsertL0Batch(records: Array<{ id: string; sessionKey: string; sessionId: string; role: string; messageText: string; recordedAt: string; timestamp: number; userId?: string }>): Promise<number> {
     if (records.length === 0) return 0;
     try {
       await this._ensureInit();
@@ -787,6 +795,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
           role: record.role,
           recorded_at_ms: isoToEpochMs(record.recordedAt),
           timestamp: record.timestamp,
+          user_id: record.userId || "default",
         };
 
         if (this.bm25Encoder) {
@@ -896,6 +905,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         message_text: String(doc.message_text ?? ""),
         recorded_at: epochMsToIso(Number(doc.recorded_at_ms ?? 0)),
         timestamp: Number(doc.timestamp ?? 0),
+        user_id: String(doc.user_id ?? "default"),
       }));
 
       return rows.reverse();
@@ -909,16 +919,19 @@ export class TcvdbMemoryStore implements IMemoryStore {
     try {
       const rows = await this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
 
-      // Group by session_id
-      const groupMap = new Map<string, Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }>>();
+      // Group by session_id + user_id: one session can carry messages from
+      // several authors (group chat), and each L1 memory must be stamped with
+      // the identity of the group it was extracted from.
+      const groupMap = new Map<string, L0SessionGroup>();
       for (const row of rows) {
-        const sid = row.session_id || "";
-        let group = groupMap.get(sid);
+        const userId = row.user_id || "default";
+        const key = `${row.session_id || ""}\u0000${userId}`;
+        let group = groupMap.get(key);
         if (!group) {
-          group = [];
-          groupMap.set(sid, group);
+          group = { sessionId: row.session_id || "", userId, messages: [] };
+          groupMap.set(key, group);
         }
-        group.push({
+        group.messages.push({
           id: row.record_id,
           role: row.role,
           content: row.message_text,
@@ -927,13 +940,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         });
       }
 
-      // Convert to array, sorted by earliest message timestamp
-      const groups: L0SessionGroup[] = [];
-      for (const [sessionId, messages] of groupMap) {
-        if (messages.length > 0) {
-          groups.push({ sessionId, messages });
-        }
-      }
+      const groups: L0SessionGroup[] = [...groupMap.values()].filter((g) => g.messages.length > 0);
       groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
 
       return groups;
