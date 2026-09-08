@@ -71,7 +71,7 @@ export interface MemoryRecord {
   sessionKey: string;
   /** Source session ID (single conversation instance identifier) */
   sessionId: string;
-  /** Platform user identity (per-user isolation). Optional — resolved from L0 when absent. */
+  /** Platform user identity (per-user isolation). Absent → "default" (legacy pool). */
   userId?: string;
 }
 
@@ -144,13 +144,15 @@ export async function writeMemory(params: {
   baseDir: string;
   sessionKey: string;
   sessionId?: string;
+  /** Author identity of the L0 group this memory was extracted from. */
+  userId?: string;
   logger?: Logger;
   /** Optional vector store for dual-write (JSONL + vector DB) */
   vectorStore?: IMemoryStore;
   /** Optional embedding service (required when vectorStore is provided) */
   embeddingService?: EmbeddingService;
 }): Promise<MemoryRecord | null> {
-  const { memory, decision, baseDir, sessionKey, sessionId, logger, vectorStore, embeddingService } = params;
+  const { memory, decision, baseDir, sessionKey, sessionId, userId, logger, vectorStore, embeddingService } = params;
 
   if (decision.action === "skip") {
     logger?.debug?.(`${TAG} Skipping memory: ${memory.content.slice(0, 50)}...`);
@@ -191,6 +193,7 @@ export async function writeMemory(params: {
     updatedAt: now,
     sessionKey,
     sessionId: sessionId || "",
+    userId: userId || "default",
   };
 
   const recordsDir = path.join(baseDir, "records");

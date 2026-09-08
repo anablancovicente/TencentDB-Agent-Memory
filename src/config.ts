@@ -93,7 +93,15 @@ export interface RecallConfig {
   scoreThreshold: number;
   /** Search strategy (default: "hybrid") */
   strategy: "embedding" | "keyword" | "hybrid";
-  /** Owner user id — additionally sees legacy user_id='default' memories (pre-isolation pool). */
+  /**
+   * Owner user id, exactly as callers send it (`platform:user_id`). Grants two rights:
+   * the legacy `user_id='default'` pool (rows written before identity was stamped —
+   * retroactively unattributable) becomes visible to this actor, and L2 scene
+   * navigation is served to this actor alone. Scene blocks and the L3 persona are
+   * structurally global, so withholding them from everybody else *is* the isolation —
+   * it is not derived from which `profiles/<id>/` directories happen to exist.
+   * Unset ⇒ fail closed: no actor gets scene navigation, the legacy pool stays dark.
+   */
   ownerUserId?: string;
   /** Overall recall timeout in milliseconds (default: 5000). When exceeded, recall is skipped with a warning. */
   timeoutMs: number;

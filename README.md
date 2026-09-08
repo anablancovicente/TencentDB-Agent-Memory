@@ -420,6 +420,16 @@ Important: the plugin only handles the **client half**. Whether the Gateway actu
 
 If `MEMORY_TENCENTDB_GATEWAY_API_KEY` is unset, the plugin also looks at `TDAI_GATEWAY_API_KEY` as a fallback — handy when both processes share an env file and the operator only wants to set one variable name. The Gateway never reads `MEMORY_TENCENTDB_GATEWAY_API_KEY`; that name is plugin-side only.
 
+### Multi-user identity & isolation
+
+`user_id` on `/capture`, `/recall` and `/search/*` is **caller-supplied** — the gateway does not authenticate it, and `server.apiKey` proves the caller holds the shared secret, not who is speaking. It is treated as an opaque namespace string and compared **exactly**, with no normalization anywhere: whatever form the client sends is the form the store is partitioned by and the form `recall.ownerUserId` must be written in.
+
+- Every L0 turn and every L1 memory is stamped with the `user_id` it arrived with. Two authors sharing one `session_key` + `session_id` (a group chat) still get separate rows — attribution is never inferred from the session, so the last speaker does not inherit everybody's memories.
+- A scoped query (`user_id` set) returns only that user's rows. `telegram:111` and `discord:111` are different people: nothing strips the platform prefix. The corollary is that a deployment sending **bare** numeric ids gets no platform namespace at all — Telegram `111` and Discord `111` then share one namespace. Prefixing is the caller's responsibility, and the two forms must not be mixed within one store.
+- `recall.ownerUserId` additionally unlocks the legacy `user_id='default'` pool — rows written before identity was stamped, which cannot be attributed retroactively. Leave it unset and nobody sees them.
+- L2 scene navigation and the L3 persona are **structurally global** (one `scene_blocks/`, one `<dataDir>/persona.md`), so serving them is an owner right, decided by `user_id === recall.ownerUserId` — an exact string compare, never a directory check and never a prefix-normalized match. An unconfigured owner means nobody gets them — the gate fails closed rather than falling back to a global dossier. A per-user dossier is read from `profiles/<user_id>/persona.md`; ids that are empty or contain `/`, `\` or `..` are rejected before the path is built.
+- **Omitting `user_id` on `/search/*` is unscoped and returns every user's rows.** That is the internal / seed path, not a client mode — always send `user_id`.
+
 ---
 
 
@@ -453,6 +463,7 @@ If `MEMORY_TENCENTDB_GATEWAY_API_KEY` is unset, the plugin also looks at `TDAI_G
 | `pipeline.enableWarmup` | `true` | Warm-up: a new session triggers from turn 1, doubling each time up to N (1→2→4→…) |
 | `pipeline.l1IdleTimeoutSeconds` | `600` | Trigger L1 after the user has been idle for this many seconds |
 | `pipeline.l2MinIntervalSeconds` | `900` | Minimum interval between two L2 passes within the same session |
+| `recall.ownerUserId` | _(unset)_ | Owner identity (`platform:user_id`). Additionally sees legacy `user_id='default'` rows, and is the **only** actor served L2 scene navigation. Unset ⇒ scene navigation is withheld from everyone. See [Multi-user identity & isolation](#multi-user-identity--isolation) |
 | `recall.timeoutMs` | `5000` | Recall timeout; on timeout, skip injection without blocking the conversation |
 | `extraction.enableDedup` | `true` | L1 vector dedup / conflict detection |
 | `capture.excludeAgents` | `[]` | Glob patterns to exclude specific agents (e.g. `bench-judge-*`) |

@@ -455,6 +455,7 @@ export MEMORY_TENCENTDB_GATEWAY_API_KEY="<与 Gateway 同一份密钥>"
 | `pipeline.enableWarmup` | `true` | Warm-up：新 session 从 1 轮起触发，每次翻倍至 N（1→2→4→…） |
 | `pipeline.l1IdleTimeoutSeconds` | `600` | 用户停止对话多久后触发 L1 |
 | `pipeline.l2MinIntervalSeconds` | `900` | 同 session 两次 L2 之间的最小间隔 |
+| `recall.ownerUserId` | _（未设置）_ | 主人身份（`platform:user_id`）：额外可见遗留的 `user_id='default'` 记忆，并且是**唯一**能拿到 L2 情境导航的身份；不设置则任何人都拿不到（fail closed）。注意 `/search/*` 不传 `user_id` = 不做隔离，返回全部用户的行，仅限内部 / seed 路径使用（详见英文版 README “Multi-user identity & isolation”） |
 | `recall.timeoutMs` | `5000` | 召回超时阈值，超时跳过注入不阻塞对话 |
 | `extraction.enableDedup` | `true` | L1 向量去重 / 冲突检测 |
 | `capture.excludeAgents` | `[]` | Glob 模式排除特定 Agent（如 `bench-judge-*`） |

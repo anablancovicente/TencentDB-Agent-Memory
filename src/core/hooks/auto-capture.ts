@@ -121,6 +121,7 @@ export async function performAutoCapture(params: {
         filteredMessages = await recordConversation({
           sessionKey,
           sessionId,
+          userId,
           rawMessages: messages,
           baseDir: pluginDataDir,
           logger,
