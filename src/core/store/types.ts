@@ -149,11 +149,15 @@ export interface L0QueryRow {
   message_text: string;
   recorded_at: string;
   timestamp: number;
+  /** Author identity of this message ("default" for legacy/unattributed rows). */
+  user_id: string;
 }
 
-/** L0 messages grouped by session ID (for L1 runner). */
+/** L0 messages grouped by session ID + author (for L1 runner). */
 export interface L0SessionGroup {
   sessionId: string;
+  /** Author identity shared by every message in this group. */
+  userId: string;
   messages: Array<{
     id: string;
     role: string;

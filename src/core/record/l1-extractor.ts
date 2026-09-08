@@ -76,6 +76,8 @@ export async function extractL1Memories(params: {
   messages: ConversationMessage[];
   sessionKey: string;
   sessionId?: string;
+  /** Author identity stamped on every stored memory (per-user isolation). */
+  userId?: string;
   baseDir: string;
   config: unknown;
   options?: {
@@ -109,7 +111,7 @@ export async function extractL1Memories(params: {
   /** Plugin instance ID for metric reporting (optional — metrics skipped if absent) */
   instanceId?: string;
 }): Promise<L1ExtractionResult> {
-  const { messages, sessionKey, sessionId, baseDir, config, logger, instanceId: metricInstanceId } = params;
+  const { messages, sessionKey, sessionId, userId, baseDir, config, logger, instanceId: metricInstanceId } = params;
   const options = params.options ?? {};
   const maxNewMessages = options.maxMessagesPerExtraction ?? 10;
   const maxBgMessages = options.maxBackgroundMessages ?? 5;
@@ -238,16 +240,17 @@ export async function extractL1Memories(params: {
         baseDir,
         sessionKey,
         sessionId,
+        userId,
         logger,
         vectorStore: options.vectorStore,
         embeddingService: options.embeddingService,
       });
     } catch (err) {
       logger?.warn?.(`${TAG} Batch dedup failed, storing all as new: ${err instanceof Error ? err.message : String(err)}`);
-      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, logger, options.vectorStore, options.embeddingService);
+      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, userId, logger, options.vectorStore, options.embeddingService);
     }
   } else {
-    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, logger, options.vectorStore, options.embeddingService);
+    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, userId, logger, options.vectorStore, options.embeddingService);
   }
 
   logger?.info(`${TAG} Extraction complete: extracted=${extracted.length}, stored=${storedRecords.length}`);
@@ -421,11 +424,12 @@ async function applyDecisions(params: {
   baseDir: string;
   sessionKey: string;
   sessionId?: string;
+  userId?: string;
   logger?: Logger;
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
 }): Promise<MemoryRecord[]> {
-  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, logger, vectorStore, embeddingService } = params;
+  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, userId, logger, vectorStore, embeddingService } = params;
   const storedRecords: MemoryRecord[] = [];
 
   // Build a map from record_id → decision
@@ -448,6 +452,7 @@ async function applyDecisions(params: {
         baseDir,
         sessionKey,
         sessionId,
+        userId,
         logger,
         vectorStore,
         embeddingService,
@@ -474,6 +479,7 @@ async function storeAllDirectly(
   baseDir: string,
   sessionKey: string,
   sessionId: string | undefined,
+  userId: string | undefined,
   logger?: Logger,
   vectorStore?: IMemoryStore,
   embeddingService?: EmbeddingService,
@@ -492,6 +498,7 @@ async function storeAllDirectly(
         baseDir,
         sessionKey,
         sessionId,
+        userId,
         logger,
         vectorStore,
         embeddingService,
