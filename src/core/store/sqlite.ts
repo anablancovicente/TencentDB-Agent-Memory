@@ -28,6 +28,8 @@ import type {
   IMemoryStore,
   StoreCapabilities,
   L0Record,
+  L0QueryRow,
+  L0SessionGroup,
   L1SearchResult,
   L1FtsResult,
   L0SearchResult,
@@ -420,7 +422,6 @@ export class VectorStore implements IMemoryStore {
 
   // Prepared statements — L1 (initialized in init())
   private stmtUpsertMeta!: StatementSync;
-  private stmtResolveUserBySession!: StatementSync;
   private stmtDeleteVec?: StatementSync;   // optional — only set when vecTablesReady
   private stmtInsertVec?: StatementSync;   // optional — only set when vecTablesReady
   private stmtDeleteMeta!: StatementSync;
@@ -635,9 +636,18 @@ export class VectorStore implements IMemoryStore {
         timestamp_end TEXT DEFAULT '',
         created_time TEXT DEFAULT '',
         updated_time TEXT DEFAULT '',
-        metadata_json TEXT DEFAULT '{}'
+        metadata_json TEXT DEFAULT '{}',
+        user_id TEXT DEFAULT 'default'
       )
     `);
+
+    // Migration: add user_id to databases created before per-user isolation.
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN user_id TEXT DEFAULT 'default'");
+      this.logger?.debug?.(`${TAG} Migrated l1_records: added user_id column`);
+    } catch {
+      // Column already exists — expected on non-first run
+    }
 
     // Indexes for common queries
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_type ON l1_records(type)");
@@ -696,15 +706,6 @@ export class VectorStore implements IMemoryStore {
       FROM l1_records WHERE record_id = ?
     `);
 
-    // Resolve the owning user_id for an L1 record from its source L0 rows.
-    // ponytail: one extra prepared SELECT instead of threading userId through
-    // the whole L1 pipeline; L0 rows already carry user_id after the capture fix.
-    this.stmtResolveUserBySession = this.db.prepare(`
-      SELECT user_id FROM l0_conversations
-      WHERE session_key = ? AND user_id != 'default'
-      ORDER BY recorded_at DESC LIMIT 1
-    `);
-
     if (this.dimensions > 0) {
       this.stmtSearchVec = this.db.prepare(`
         SELECT record_id, distance
@@ -726,7 +727,8 @@ export class VectorStore implements IMemoryStore {
         role TEXT NOT NULL DEFAULT '',
         message_text TEXT NOT NULL,
         recorded_at TEXT DEFAULT '',
-        timestamp INTEGER DEFAULT 0
+        timestamp INTEGER DEFAULT 0,
+        user_id TEXT DEFAULT 'default'
       )
     `);
 
@@ -734,6 +736,14 @@ export class VectorStore implements IMemoryStore {
     try {
       this.db.exec("ALTER TABLE l0_conversations ADD COLUMN timestamp INTEGER DEFAULT 0");
       this.logger?.debug?.(`${TAG} Migrated l0_conversations: added timestamp column`);
+    } catch {
+      // Column already exists — expected on non-first run
+    }
+
+    // Migration: add user_id to databases created before per-user isolation.
+    try {
+      this.db.exec("ALTER TABLE l0_conversations ADD COLUMN user_id TEXT DEFAULT 'default'");
+      this.logger?.debug?.(`${TAG} Migrated l0_conversations: added user_id column`);
     } catch {
       // Column already exists — expected on non-first run
     }
@@ -792,7 +802,7 @@ export class VectorStore implements IMemoryStore {
     // Sort/filter by recorded_at (write time) instead of timestamp (conversation time)
     // because L1 cursor uses recorded_at semantics. ISO 8601 string comparison preserves time order.
     this.stmtL0QueryAll = this.db.prepare(`
-      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp, user_id
       FROM l0_conversations
       WHERE session_key = ?
       ORDER BY recorded_at DESC
@@ -800,7 +810,7 @@ export class VectorStore implements IMemoryStore {
     `);
 
     this.stmtL0QueryAfter = this.db.prepare(`
-      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp, user_id
       FROM l0_conversations
       WHERE session_key = ? AND recorded_at > ?
       ORDER BY recorded_at DESC
@@ -808,7 +818,7 @@ export class VectorStore implements IMemoryStore {
     `);
 
     this.stmtL0QueryMigrationCursor = this.db.prepare(`
-      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, role, message_text, recorded_at, timestamp, user_id
       FROM l0_conversations
       WHERE record_id > ?
       ORDER BY record_id ASC
@@ -1145,7 +1155,7 @@ export class VectorStore implements IMemoryStore {
           record.createdAt,
           record.updatedAt,
           JSON.stringify(record.metadata),
-          (record.userId) || this.resolveUserIdForSession(record.sessionKey),
+          record.userId || "default",
         );
 
         if (!skipVec) {
@@ -2002,15 +2012,7 @@ export class VectorStore implements IMemoryStore {
     sessionKey: string,
     afterRecordedAtMs?: number,
     limit = 50,
-  ): Array<{
-    record_id: string;
-    session_key: string;
-    session_id: string;
-    role: string;
-    message_text: string;
-    recorded_at: string;
-    timestamp: number;
-  }> {
+  ): L0QueryRow[] {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query] SKIPPED (degraded mode)`);
       return [];
@@ -2040,25 +2042,13 @@ export class VectorStore implements IMemoryStore {
         message_text: r.message_text as string,
         recorded_at: (r.recorded_at as string) || "",
         timestamp: (r.timestamp as number) || 0,
+        user_id: (r.user_id as string) || "default",
       })).reverse();
     } catch (err) {
       this.logger?.warn(
         `${TAG} [L0-query] FAILED (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
-    }
-  }
-
-  /**
-   * Resolve the owning user_id for a session from its newest non-default L0 rows.
-   * Returns "default" when the session has no scoped rows (legacy/unattributed).
-   */
-  private resolveUserIdForSession(sessionKey: string): string {
-    try {
-      const row = this.stmtResolveUserBySession.get(sessionKey) as { user_id: string } | undefined;
-      return row?.user_id || "default";
-    } catch {
-      return "default";
     }
   }
 
@@ -2073,7 +2063,7 @@ export class VectorStore implements IMemoryStore {
     sessionKey: string,
     afterRecordedAtMs?: number,
     limit = 50,
-  ): Array<{ sessionId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> {
+  ): L0SessionGroup[] {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query-grouped] SKIPPED (degraded mode)`);
       return [];
@@ -2081,16 +2071,19 @@ export class VectorStore implements IMemoryStore {
     try {
       const rows = this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
 
-      // Group by session_id
-      const groupMap = new Map<string, Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }>>();
+      // Group by session_id + user_id: one session can carry messages from
+      // several authors (group chat), and each L1 memory must be stamped with
+      // the identity of the group it was extracted from.
+      const groupMap = new Map<string, { sessionId: string; userId: string; messages: L0SessionGroup["messages"] }>();
       for (const row of rows) {
-        const sid = row.session_id || "";
-        let group = groupMap.get(sid);
+        const userId = row.user_id || "default";
+        const key = `${row.session_id || ""}\u0000${userId}`;
+        let group = groupMap.get(key);
         if (!group) {
-          group = [];
-          groupMap.set(sid, group);
+          group = { sessionId: row.session_id || "", userId, messages: [] };
+          groupMap.set(key, group);
         }
-        group.push({
+        group.messages.push({
           id: row.record_id,
           role: row.role,
           content: row.message_text,
@@ -2100,12 +2093,7 @@ export class VectorStore implements IMemoryStore {
       }
 
       // Convert to array, sorted by earliest message timestamp
-      const groups: Array<{ sessionId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> = [];
-      for (const [sessionId, messages] of groupMap) {
-        if (messages.length > 0) {
-          groups.push({ sessionId, messages });
-        }
-      }
+      const groups: L0SessionGroup[] = [...groupMap.values()].filter((g) => g.messages.length > 0);
       groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
 
       this.logger?.info(
