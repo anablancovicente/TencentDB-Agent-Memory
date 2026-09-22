@@ -15,6 +15,7 @@
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
 import { EXTRACT_MEMORIES_SYSTEM_PROMPT, formatExtractionPrompt } from "../prompts/l1-extraction.js";
 import { batchDedup } from "./l1-dedup.js";
+import { layaPreWriteGate } from "./l1-laya-gate.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
@@ -99,6 +100,8 @@ export async function extractL1Memories(params: {
     embeddingService?: EmbeddingService;
     /** Top-K candidates for conflict recall (default: 5) */
     conflictRecallTopK?: number;
+    /** Owner user id — Laya dup gate applies a stricter threshold for owner records */
+    ownerUserId?: string;
     /** Override embedding timeout for capture-path calls (milliseconds) */
     embeddingTimeoutMs?: number;
     /**
@@ -234,9 +237,21 @@ export async function extractL1Memories(params: {
         llmRunner: options.llmRunner,
       });
 
+      // Wave 3a: Laya anti-dup pre-write gate (fail-open; never blocks live replies —
+      // this runs on the async capture pipeline).
+      const gatedDecisions = await layaPreWriteGate({
+        memories: memoriesWithIds,
+        decisions,
+        userId,
+        ownerUserId: options.ownerUserId,
+        vectorStore: options.vectorStore,
+        embeddingService: options.embeddingService,
+        logger,
+      });
+
       storedRecords = await applyDecisions({
         memoriesWithIds,
-        decisions,
+        decisions: gatedDecisions,
         baseDir,
         sessionKey,
         sessionId,

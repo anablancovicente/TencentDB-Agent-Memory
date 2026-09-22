@@ -367,6 +367,7 @@ export function createL1Runner(opts: {
             vectorStore,
             embeddingService,
             conflictRecallTopK: cfg.embedding.conflictRecallTopK,
+            ownerUserId: cfg.recall.ownerUserId,
             embeddingTimeoutMs: cfg.embedding.captureTimeoutMs ?? cfg.embedding.timeoutMs,
             llmRunner,
           },
